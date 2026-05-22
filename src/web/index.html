@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RunCam Controller</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:#111;color:#eee;font-size:14px;padding-bottom:56px}
+.tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:#222;border-top:1px solid #333;z-index:10}
+.tabs button{flex:1;padding:10px 0;background:none;border:none;color:#888;font-size:10px;cursor:pointer}
+.tabs button.active{color:#4af}
+.tab-content{display:none;padding:12px}
+.tab-content.active{display:block}
+h2{font-size:16px;margin-bottom:8px;color:#aaa}
+.card{background:#1a1a1a;border-radius:8px;padding:12px;margin-bottom:8px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:4px 0}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px}
+.badge-green{background:#2a5;color:#fff}
+.badge-red{background:#a33;color:#fff}
+.badge-blue{background:#26a;color:#fff}
+.badge-yellow{background:#a82;color:#fff}
+button.act{padding:8px 14px;border:none;border-radius:4px;background:#26a;color:#fff;cursor:pointer;margin:2px;font-size:13px}
+button.act:disabled{opacity:.4;cursor:default}
+button.act.danger{background:#a33}
+.toggle{position:relative;width:44px;height:24px}
+.toggle input{opacity:0;width:0;height:0}
+.toggle .slider{position:absolute;top:0;left:0;right:0;bottom:0;background:#444;border-radius:24px;cursor:pointer}
+.toggle .slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked+.slider{background:#4af}
+.toggle input:checked+.slider:before{transform:translateX(20px)}
+select,input[type=range]{background:#222;color:#eee;border:1px solid #444;border-radius:4px;padding:4px 8px;width:100%}
+input[type=range]{-webkit-appearance:none;height:6px;border:none;padding:0}
+.sim-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;max-width:180px;margin:4px auto}
+.sim-grid button{padding:10px;font-size:14px}
+.pass{color:#2a5}.fail{color:#a33}
+#status-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}
+</style>
+</head>
+<body>
+
+<div id="tab-status" class="tab-content active">
+<h2>Status</h2>
+<div class="card">
+<div class="row"><span>Preflight</span><span id="pf-badge" class="badge badge-green">---</span></div>
+<div id="pf-details"></div>
+</div>
+<div class="card">
+<div class="row"><span><span id="status-dot" style="background:#2a5"></span>State</span><span id="st-state" class="badge badge-blue">IDLE</span></div>
+<div class="row"><span>Recording</span><span id="st-rec">00:00</span></div>
+<div class="row"><span>Auto-stop in</span><span id="st-stop">5:00</span></div>
+<div class="row"><span>Auto-restart</span><label class="toggle"><input type="checkbox" id="cb-restart" onchange="setRestart(this.checked)"><span class="slider"></span></label></div>
+</div>
+</div>
+
+<div id="tab-control" class="tab-content">
+<h2>Control</h2>
+<div class="card">
+<div class="row"><button class="act" id="btn-start" onclick="api('POST','/api/record/start')">Start Rec</button><button class="act danger" id="btn-stop" onclick="api('POST','/api/record/stop')" disabled>Stop Rec</button></div>
+<button class="act" onclick="api('POST','/api/photo')">Photo</button>
+</div>
+<div class="card">
+<h2>Button Sim</h2>
+<div class="sim-grid">
+<span></span><button class="act" onclick="btn('up')">Up</button><span></span>
+<button class="act" onclick="btn('left')">Left</button><button class="act" onclick="btn('confirm')">OK</button><button class="act" onclick="btn('right')">Right</button>
+<span></span><button class="act" onclick="btn('down')">Down</button><span></span>
+</div>
+<div class="row" style="margin-top:4px"><button class="act" onclick="btn('power')">Power</button><button class="act" onclick="btn('mode')">Mode</button></div>
+</div>
+<div class="card">
+<h2>Arm Override</h2>
+<div class="row"><button class="act" onclick="api('POST','/api/arm')">Arm</button><button class="act danger" onclick="api('POST','/api/disarm')">Disarm</button></div>
+</div>
+</div>
+
+<div id="tab-settings" class="tab-content">
+<div class="card" style="background:#332; border:1px solid #aa5; padding:12px">
+<strong>Settings unavailable</strong><br>
+The RunCam Thumb Pro W's setting-ID map is not documented for this firmware.
+Camera settings cannot be read or written from the web UI. Recording and
+basic camera control work normally - see the Control tab.
+</div>
+</div>
+
+<div id="tab-device" class="tab-content">
+<h2>Device Info</h2>
+<div class="card">
+<div class="row"><span>Protocol</span><span id="d-proto">---</span></div>
+<div class="row"><span>Features</span><span id="d-bitmask">---</span></div>
+</div>
+<h2>Supported Features</h2>
+<div class="card" id="d-features"></div>
+<button class="act" onclick="loadDevice()" style="margin-top:8px">Refresh</button>
+</div>
+
+<div class="tabs">
+<button class="active" onclick="showTab('status',this)">Status</button>
+<button onclick="showTab('control',this)">Control</button>
+<button onclick="showTab('settings',this)">Settings</button>
+<button onclick="showTab('device',this)">Device</button>
+</div>
+
+<script>
+function showTab(id,btn){document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));document.getElementById('tab-'+id).classList.add('active');btn.classList.add('active');if(id==='device')loadDevice()}
+function api(method,path,body){fetch(path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(r=>r.json()).then(d=>{if(!d.ok&&d.error)alert(d.error);updateUI()}).catch(e=>console.error(e))}
+function btn(name){api('POST','/api/button',{button:name})}
+function setRestart(v){api('POST','/api/auto-restart',{enabled:v})}
+function loadDevice(){fetch('/api/device').then(r=>r.json()).then(d=>{document.getElementById('d-proto').textContent='v'+d.protocolVersion;document.getElementById('d-bitmask').textContent=d.featureBitmask||'---';let h='';let f=d.features||{};for(let[k,v]of Object.entries(f))h+='<div class="row"><span>'+k+'</span><span>'+(v?'Yes':'No')+'</span></div>';document.getElementById('d-features').innerHTML=h}).catch(e=>console.error(e))}
+function updateUI(){fetch('/api/status').then(r=>r.json()).then(d=>{let el=document.getElementById('st-state');el.textContent=d.state;el.className='badge badge-'+(d.state==='RECORDING'?'red':d.state==='ARMED'?'yellow':'blue');let rec=d.recordingSeconds||0;let stop=d.autoStopSeconds||300;document.getElementById('st-rec').textContent=fmt(rec);document.getElementById('st-stop').textContent=fmt(stop-rec>0?stop-rec:0);let dot=document.getElementById('status-dot');dot.style.background=d.cameraCommsOk?'#2a5':'#a33';document.getElementById('btn-start').disabled=d.state!=='IDLE';document.getElementById('btn-stop').disabled=d.state==='IDLE';if(d.preflight){let pb=document.getElementById('pf-badge');if(d.preflight.deferred){pb.textContent='N/A';pb.className='badge badge-blue';document.getElementById('pf-details').textContent='Settings access deferred for this camera.';}else{pb.textContent=d.preflight.passed?'PASS':'FAIL';pb.className='badge '+(d.preflight.passed?'badge-green':'badge-red');}}}).catch(e=>console.error(e))}
+function fmt(s){let m=Math.floor(s/60);let sec=s%60;return m+':'+(sec<10?'0':'')+sec}
+updateUI();
+let ws=new WebSocket('ws://'+location.host+'/ws');
+ws.onmessage=function(e){let d=JSON.parse(e.data);if(d.type==='status'){let el=document.getElementById('st-state');el.textContent=d.state;el.className='badge badge-'+(d.state==='RECORDING'?'red':d.state==='ARMED'?'yellow':'blue');let rec=d.recordingSeconds||0;let stop=d.autoStopSeconds||300;document.getElementById('st-rec').textContent=fmt(rec);document.getElementById('st-stop').textContent=fmt(stop-rec>0?stop-rec:0);document.getElementById('cb-restart').checked=d.autoRestart;document.getElementById('btn-start').disabled=d.state!=='IDLE';document.getElementById('btn-stop').disabled=d.state==='IDLE';let dot=document.getElementById('status-dot');dot.style.background=d.cameraCommsOk?'#2a5':'#a33'}else if(d.type==='preflight'){let pb=document.getElementById('pf-badge');pb.textContent=d.passed?'PASS':'FAIL';pb.className='badge '+(d.passed?'badge-green':'badge-red');let ch=d.checks||{};let det='';for(let[k,v]of Object.entries(ch)){det+='<div class="row"><span>'+k+'</span><span class="'+(v.ok?'pass':'fail')+'">'+(v.actual+'')+(v.ok?'':' expected '+(v.expected+''))+'</span></div>'}document.getElementById('pf-details').innerHTML=det}};
+</script>
+</body>
+</html>
