@@ -158,6 +158,30 @@ void test_write_setting_nak_invalid_arg() {
                       c.writeSetting(SettingId::RESOLUTION, 0));
 }
 
+void test_read_setting_nak_invalid_id() {
+    MockTransport t;
+    t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
+    t.enqueueResponse(nak(NAK_INVALID_ARG));
+    RunCamCamera c(t);
+    c.begin();
+    uint8_t v = 0;
+    TEST_ASSERT_EQUAL(CameraResult::REJECTED_ARG,
+                      c.readSetting(SettingId::RESOLUTION, v));
+}
+
+void test_read_setting_ack_returns_unknown() {
+    // The Thumb Pro W's GET_SETTINGS response format is undocumented.
+    // Even if the camera ACKs, we refuse to invent a setting value.
+    MockTransport t;
+    t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
+    t.enqueueResponse(ack(0x01));
+    RunCamCamera c(t);
+    c.begin();
+    uint8_t v = 0xAA;
+    TEST_ASSERT_EQUAL(CameraResult::REJECTED_UNKNOWN,
+                      c.readSetting(SettingId::RESOLUTION, v));
+}
+
 // --- Button simulation ------------------------------------------------------
 
 void test_simulate_power_button() {
@@ -240,6 +264,8 @@ int main() {
     RUN_TEST(test_write_setting_no_feature);
     RUN_TEST(test_write_setting_invalid_value);
     RUN_TEST(test_write_setting_nak_invalid_arg);
+    RUN_TEST(test_read_setting_nak_invalid_id);
+    RUN_TEST(test_read_setting_ack_returns_unknown);
     RUN_TEST(test_simulate_power_button);
     RUN_TEST(test_simulate_mode_button);
     RUN_TEST(test_simulate_5key_not_supported);

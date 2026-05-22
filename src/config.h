@@ -24,6 +24,9 @@
 // Serial
 #define RUNCAM_BAUD_RATE       115200
 #define RUNCAM_RESPONSE_TIMEOUT_MS  500
+// Once any byte arrives the receive continues until 200 ms pass with no
+// new bytes — handles the camera's bursty NAK retransmissions (FSD §4.7).
+#define RUNCAM_INTER_BYTE_TIMEOUT_MS  200
 #define RUNCAM_MAX_RETRIES     3
 
 // Flight logic

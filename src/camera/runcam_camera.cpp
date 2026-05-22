@@ -78,11 +78,12 @@ CameraResult RunCamCamera::readSetting(SettingId id, uint8_t& outValue) {
         ParseResult pr = parseResponse(rxBuf, static_cast<size_t>(rxLen), resp);
         if (pr != ParseResult::OK) { result = parseResultToCameraResult(pr); continue; }
         if (resp.kind == ResponseKind::Nak) return nakToResult(resp.errCode);
-        if (resp.kind == ResponseKind::Ack) {
-            outValue = resp.actionEcho;  // best-effort, see comment above
-            return CameraResult::OK;
-        }
-        return CameraResult::ERROR_HEADER;
+        // We accept an ACK as proof the request was received, but the camera's
+        // GET_SETTINGS response format on the Thumb Pro W is not documented
+        // and the action_echo byte is NOT a setting value. Refuse to invent
+        // data — return REJECTED_UNKNOWN so the caller can surface this.
+        (void)outValue;
+        return CameraResult::REJECTED_UNKNOWN;
     }
     return result;
 }

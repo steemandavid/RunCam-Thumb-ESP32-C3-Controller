@@ -109,9 +109,67 @@ void test_debounce_too_short_no_trigger() {
 void test_force_start_stop_recording() {
     MockCamera camera;
     FlightController fc(camera);
-    fc.forceStartRecording();
+    TEST_ASSERT_EQUAL(CameraResult::OK, fc.forceStartRecording());
     TEST_ASSERT_EQUAL(FlightState::RECORDING, fc.getState());
-    fc.forceStopRecording();
+    TEST_ASSERT_EQUAL(CameraResult::OK, fc.forceStopRecording());
+    TEST_ASSERT_EQUAL(FlightState::IDLE, fc.getState());
+}
+
+void test_force_start_surfaces_nak() {
+    MockCamera camera;
+    camera.startRecordingResult = CameraResult::REJECTED_STATE;
+    FlightController fc(camera);
+    CameraResult r = fc.forceStartRecording();
+    TEST_ASSERT_EQUAL(CameraResult::REJECTED_STATE, r);
+    TEST_ASSERT_EQUAL(FlightState::IDLE, fc.getState());
+}
+
+// MAJOR-3: when the camera persistently NAKs stop, FlightController must
+// back off (>= 1 s between attempts) and give up after AUTO_STOP_MAX_RETRIES.
+void test_auto_stop_nak_backoff() {
+    MockCamera camera;
+    camera.stopRecordingResult = CameraResult::REJECTED_STATE;
+    FlightController fc(camera);
+    // Arm and reach RECORDING.
+    fc.update(0, false);
+    fc.update(10, true);
+    fc.update(60, true);
+    TEST_ASSERT_EQUAL(FlightState::RECORDING, fc.getState());
+
+    // First past-the-deadline tick — one stop attempt.
+    uint32_t t = 60 + AUTO_STOP_DURATION_MS + 1;
+    fc.update(t, true);
+    TEST_ASSERT_EQUAL(1, camera.stopRecordingCalled);
+    TEST_ASSERT_EQUAL(FlightState::RECORDING, fc.getState());
+
+    // Many ticks within the back-off window — no new attempts.
+    for (uint32_t dt = 1; dt < FlightController::AUTO_STOP_RETRY_INTERVAL_MS; dt += 50) {
+        fc.update(t + dt, true);
+    }
+    TEST_ASSERT_EQUAL(1, camera.stopRecordingCalled);
+
+    // Past the back-off — second attempt.
+    fc.update(t + FlightController::AUTO_STOP_RETRY_INTERVAL_MS + 1, true);
+    TEST_ASSERT_EQUAL(2, camera.stopRecordingCalled);
+}
+
+void test_auto_stop_gives_up_after_max_retries() {
+    MockCamera camera;
+    camera.stopRecordingResult = CameraResult::REJECTED_STATE;
+    FlightController fc(camera);
+    fc.update(0, false);
+    fc.update(10, true);
+    fc.update(60, true);
+    TEST_ASSERT_EQUAL(FlightState::RECORDING, fc.getState());
+
+    // Drive AUTO_STOP_MAX_RETRIES attempts, each ≥ AUTO_STOP_RETRY_INTERVAL_MS apart.
+    uint32_t t = 60 + AUTO_STOP_DURATION_MS + 1;
+    for (int i = 0; i < FlightController::AUTO_STOP_MAX_RETRIES; i++) {
+        fc.update(t, true);
+        t += FlightController::AUTO_STOP_RETRY_INTERVAL_MS + 10;
+    }
+    TEST_ASSERT_EQUAL(FlightController::AUTO_STOP_MAX_RETRIES, camera.stopRecordingCalled);
+    // After max retries the controller forces back to IDLE rather than spinning forever.
     TEST_ASSERT_EQUAL(FlightState::IDLE, fc.getState());
 }
 
@@ -126,5 +184,8 @@ int main() {
     RUN_TEST(test_disarm_ignored_in_recording);
     RUN_TEST(test_debounce_too_short_no_trigger);
     RUN_TEST(test_force_start_stop_recording);
+    RUN_TEST(test_force_start_surfaces_nak);
+    RUN_TEST(test_auto_stop_nak_backoff);
+    RUN_TEST(test_auto_stop_gives_up_after_max_retries);
     return UNITY_END();
 }

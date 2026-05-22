@@ -20,6 +20,8 @@
 #include <HWCDC.h>
 #include <Preferences.h>
 #include <Wire.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include "config.h"
 #include "system_state.h"
@@ -32,7 +34,11 @@
 #include "web/ws_notifier.h"
 #include "web/web_server.h"
 
-HWCDC          usbSerial;
+HWCDC             usbSerial;
+// Mutex guarding all camera + flight controller access. Web routes
+// (AsyncTCP task) and the main loop both take this before touching
+// the shared modules. See Code_Review_Phase4 MAJOR-2.
+SemaphoreHandle_t camMutex;
 
 // ---- IPreferences adapter for the real ESP32 Preferences library -----------
 class EspPreferences : public IPreferences {
@@ -97,6 +103,8 @@ void setup() {
     usbSerial.println();
     usbSerial.println("=== RunCam Thumb Pro W Controller boot ===");
 
+    camMutex = xSemaphoreCreateMutex();
+
     pinMode(GPIO_STATUS_LED, OUTPUT);
     pinMode(GPIO_ARM_PIN, INPUT_PULLUP);
     digitalWrite(GPIO_STATUS_LED, LOW);
@@ -121,8 +129,9 @@ void setup() {
 
     // ---- Preflight (deferred — see §5.2) ----
     preflight = PreflightCheck::run(camera, settings);
-    systemState.preflightDone   = true;
-    systemState.preflightPassed = preflight.passed;
+    systemState.preflightDone     = true;
+    systemState.preflightPassed   = preflight.passed;
+    systemState.preflightDeferred = preflight.deferred;
     if (preflight.deferred) {
         usbSerial.println("Preflight: deferred (settings access unavailable)");
     }
@@ -136,7 +145,7 @@ void setup() {
     }
 
     // ---- WiFi AP + Web ----
-    webServer.begin(camera, flight, settingsStore, wsNotifier, preflight);
+    webServer.begin(camera, flight, settingsStore, wsNotifier, preflight, camMutex);
     usbSerial.printf("WiFi AP: SSID=\"%s\" IP=192.168.4.1\n", WIFI_SSID);
 
     usbSerial.println("=== boot complete ===");
@@ -150,13 +159,17 @@ void loop() {
     uint32_t now = millis();
     bool armPinLow = digitalRead(GPIO_ARM_PIN) == LOW;
 
-    flight.update(now, armPinLow);
-
-    // Update SystemState used by OLED + WebSocket
-    systemState.flightState      = flight.getState();
-    systemState.recordingSeconds = flight.getRecordingSeconds(now);
-    systemState.autoStopSeconds  = flight.getAutoStopSeconds();
-    systemState.cameraCommsOk    = camera.isInitialised();
+    // All camera + flight access goes under the mutex (MAJOR-2).
+    if (xSemaphoreTake(camMutex, portMAX_DELAY) == pdTRUE) {
+        flight.update(now, armPinLow);
+        systemState.flightState      = flight.getState();
+        systemState.recordingSeconds = flight.getRecordingSeconds(now);
+        systemState.autoStopSeconds  = flight.getAutoStopSeconds();
+        systemState.autoRestart      = flight.getAutoRestart();
+        systemState.cameraCommsOk    = camera.isInitialised();
+        xSemaphoreGive(camMutex);
+    }
+    systemState.armPinLow = armPinLow;
 
     updateStatusLed(now, systemState.flightState);
 

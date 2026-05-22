@@ -29,17 +29,31 @@ void FlightController::update(uint32_t nowMs, bool armPinLow) {
             break;
         }
 
-        case FlightState::ARMED: {
+        case FlightState::ARMED:
             break;
-        }
 
         case FlightState::RECORDING: {
             uint32_t elapsed = nowMs - recordingStartMs_;
-            if (elapsed >= AUTO_STOP_DURATION_MS) {
-                camera_.stopRecording();
+            if (elapsed < AUTO_STOP_DURATION_MS) break;
+
+            // Back-off: don't hammer the camera with stop attempts faster
+            // than once per second. Code_Review_Phase4 MAJOR-3.
+            if (lastStopAttemptMs_ != 0 &&
+                (nowMs - lastStopAttemptMs_) < AUTO_STOP_RETRY_INTERVAL_MS) {
+                break;
+            }
+            lastStopAttemptMs_ = nowMs;
+            stopAttemptCount_++;
+
+            CameraResult r = camera_.stopRecording();
+            if (r == CameraResult::OK) {
+                // Reset back-off state.
+                lastStopAttemptMs_ = 0;
+                stopAttemptCount_  = 0;
+
                 if (autoRestart_) {
-                    CameraResult result = camera_.startRecording();
-                    if (result == CameraResult::OK) {
+                    CameraResult sr = camera_.startRecording();
+                    if (sr == CameraResult::OK) {
                         state_ = FlightState::RECORDING;
                         recordingStartMs_ = nowMs;
                     } else {
@@ -50,17 +64,25 @@ void FlightController::update(uint32_t nowMs, bool armPinLow) {
                     armedLatched_ = false;
                     armDebounceStart_ = 0;
                 }
+            } else if (stopAttemptCount_ >= AUTO_STOP_MAX_RETRIES) {
+                // Give up — force back to IDLE and let the operator decide.
+                // The camera state may have drifted; an out-of-band signal
+                // (LED / current) is the canonical confirmation.
+                state_ = FlightState::IDLE;
+                armedLatched_ = false;
+                armDebounceStart_ = 0;
+                lastStopAttemptMs_ = 0;
+                stopAttemptCount_  = 0;
             }
             break;
         }
 
-        case FlightState::STOPPING: {
-            // Reached only via external trigger (forceStopRecording)
+        case FlightState::STOPPING:
+            // Reached only via external trigger (forceStopRecording).
             state_ = FlightState::IDLE;
             armedLatched_ = false;
             armDebounceStart_ = 0;
             break;
-        }
     }
 }
 
@@ -76,23 +98,25 @@ uint32_t FlightController::getAutoStopSeconds() const {
 }
 
 void FlightController::setAutoRestart(bool enabled) { autoRestart_ = enabled; }
-bool FlightController::getAutoRestart() const { return autoRestart_; }
+bool FlightController::getAutoRestart() const       { return autoRestart_; }
 
-void FlightController::forceStartRecording() {
-    if (state_ == FlightState::IDLE) {
-        CameraResult result = camera_.startRecording();
-        if (result == CameraResult::OK) {
-            state_ = FlightState::RECORDING;
-            recordingStartMs_ = 0;
-        }
+CameraResult FlightController::forceStartRecording() {
+    if (state_ != FlightState::IDLE) return CameraResult::OK;  // already recording
+    CameraResult result = camera_.startRecording();
+    if (result == CameraResult::OK) {
+        state_ = FlightState::RECORDING;
+        recordingStartMs_ = 0;
     }
+    return result;
 }
 
-void FlightController::forceStopRecording() {
-    if (state_ == FlightState::RECORDING) {
-        camera_.stopRecording();
+CameraResult FlightController::forceStopRecording() {
+    if (state_ != FlightState::RECORDING) return CameraResult::OK;  // not recording
+    CameraResult result = camera_.stopRecording();
+    if (result == CameraResult::OK) {
         state_ = FlightState::IDLE;
         armedLatched_ = false;
         armDebounceStart_ = 0;
     }
+    return result;
 }

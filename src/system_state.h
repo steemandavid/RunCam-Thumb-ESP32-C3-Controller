@@ -15,6 +15,9 @@ struct SystemState {
     uint32_t    autoStopSeconds = 0;
     bool        preflightPassed = false;
     bool        preflightDone = false;
+    bool        preflightDeferred = false;
     bool        cameraCommsOk = false;
+    bool        autoRestart = false;
+    bool        armPinLow = false;
     char        preflightFailItems[16] = {};
 };
