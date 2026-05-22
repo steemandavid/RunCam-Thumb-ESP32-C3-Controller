@@ -75,11 +75,18 @@ button simulation commands ACK/NAK as documented.
 - PreflightCheck — runs in deferred mode (synthetic pass result) for the
   same reason; the LED never enters the "preflight failed" pattern.
 
-**Known issues** carried over from earlier phases (see
-`Code_Review_Phase4_20260522_0537.md` §2):
+**Code review** (`Code_Review_Phase4_20260522_0537.md`) flagged 3 MAJOR
+and 5 MINOR findings; all were addressed in commit `ac49034`. The
+firmware now:
 
-- `UartTransport::receive` lacks the inter-byte timeout required by FSD §4.7
-- Web-server callbacks and the main loop share `FlightController` /
-  `RunCamCamera` state without a mutex
-- Auto-stop expiry can loop indefinitely if the camera persistently NAKs the
-  Power button with `REJECTED_STATE`
+- Extends the UART receive deadline by 200 ms after each byte to handle
+  the camera's bursty NAK retransmissions (FSD §4.7).
+- Serialises all camera + flight controller access through a FreeRTOS
+  mutex so AsyncTCP web callbacks cannot race against the main loop.
+- Backs off auto-stop retries to 1 Hz and gives up after 5 attempts
+  rather than spinning on a persistent `REJECTED_STATE` NAK.
+- Surfaces NAK rejections through the REST API (`/api/record/start`,
+  `/api/photo`, `/api/button`, etc.) instead of falsely reporting
+  `ok:true`.
+
+Host test count: **94 / 94 passing**.
