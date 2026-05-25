@@ -8,6 +8,8 @@ class MockCamera : public ICamera {
 public:
     CameraResult startRecordingResult = CameraResult::OK;
     CameraResult stopRecordingResult = CameraResult::OK;
+    CameraResult pollRecordingStateResult = CameraResult::OK;
+    bool         recordingState = false;
 
     // Per-setting read results
     uint8_t resolutionValue = 0;
@@ -17,12 +19,23 @@ public:
 
     CameraResult startRecording() override {
         startRecordingCalled++;
+        if (startRecordingResult == CameraResult::OK) recordingState = true;
         return startRecordingResult;
     }
 
     CameraResult stopRecording() override {
         stopRecordingCalled++;
+        if (stopRecordingResult == CameraResult::OK) recordingState = false;
         return stopRecordingResult;
+    }
+
+    bool isRecording() const override {
+        return recordingState;
+    }
+
+    CameraResult pollRecordingState() override {
+        pollRecordingStateCalled++;
+        return pollRecordingStateResult;
     }
 
     CameraResult readSetting(SettingId id, uint8_t& outValue) override {
@@ -39,5 +52,6 @@ public:
 
     int startRecordingCalled = 0;
     int stopRecordingCalled = 0;
+    int pollRecordingStateCalled = 0;
     std::vector<SettingId> readSettingCalls;
 };

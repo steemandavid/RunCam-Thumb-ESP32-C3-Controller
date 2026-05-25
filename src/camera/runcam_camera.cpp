@@ -31,8 +31,13 @@ CameraResult RunCamCamera::stopRecording() {
     if (!initialised_) return CameraResult::ERROR_NOT_INITIALISED;
     if (!hasFeature(FEAT_SIMULATE_POWER_BUTTON)) return CameraResult::ERROR_NOT_SUPPORTED;
     if (!isRecording_) return CameraResult::OK;  // already stopped
-    CameraResult r = sendAction(ACTION_POWER_BUTTON);
-    if (r == CameraResult::OK) isRecording_ = false;
+    // Use explicit Stop (0x04) — ACK if recording (stops it), NAK 0x02 if not.
+    // NAK means camera was already stopped (e.g. user pressed physical button).
+    CameraResult r = sendAction(ACTION_STOP_REC);
+    if (r == CameraResult::OK || r == CameraResult::REJECTED_STATE) {
+        isRecording_ = false;
+        return CameraResult::OK;
+    }
     return r;
 }
 
@@ -130,6 +135,51 @@ CameraResult RunCamCamera::connectionEvent(uint8_t event) {
 
 CameraResult RunCamCamera::sendAction(uint8_t action) {
     return sendRequest(CMD_CAMERA_CONTROL, &action, 1);
+}
+
+CameraResult RunCamCamera::sendSingleAction(uint8_t action) {
+    uint8_t txBuf[MAX_FRAME_SIZE];
+    size_t txLen = buildFrame(txBuf, sizeof(txBuf), CMD_CAMERA_CONTROL, &action, 1);
+    if (txLen == 0) return CameraResult::ERROR_TRANSPORT;
+
+    transport_.flush();
+    if (!transport_.send(txBuf, txLen)) return CameraResult::ERROR_TRANSPORT;
+
+    uint8_t rxBuf[MAX_FRAME_SIZE];
+    int rxLen = transport_.receive(rxBuf, sizeof(rxBuf), RUNCAM_RESPONSE_TIMEOUT_MS);
+    if (rxLen <= 0) return CameraResult::ERROR_TIMEOUT;
+
+    ParsedResponse resp{};
+    ParseResult pr = parseResponse(rxBuf, static_cast<size_t>(rxLen), resp);
+    if (pr != ParseResult::OK) return parseResultToCameraResult(pr);
+
+    if (resp.kind == ResponseKind::Ack) return CameraResult::OK;
+    if (resp.kind == ResponseKind::Nak) return nakToResult(resp.errCode);
+    return CameraResult::ERROR_HEADER;
+}
+
+CameraResult RunCamCamera::pollRecordingState() {
+    if (!initialised_) return CameraResult::ERROR_NOT_INITIALISED;
+
+    // Probe with Stop Recording (action 0x04):
+    //   NAK 0x02 → camera is NOT recording
+    //   ACK      → camera WAS recording (now stopped), restart with Power toggle
+    CameraResult probe = sendSingleAction(ACTION_STOP_REC);
+
+    if (probe == CameraResult::REJECTED_STATE) {
+        isRecording_ = false;
+        return CameraResult::OK;
+    }
+
+    if (probe == CameraResult::OK) {
+        // Camera was recording, probe stopped it. Restart immediately.
+        CameraResult restart = sendSingleAction(ACTION_POWER_BUTTON);
+        isRecording_ = (restart == CameraResult::OK);
+        return CameraResult::OK;
+    }
+
+    // Timeout, CRC error, etc. — don't update state.
+    return probe;
 }
 
 CameraResult RunCamCamera::sendRequest(uint8_t cmd, const uint8_t* data, size_t dataLen) {

@@ -134,12 +134,26 @@ void setup() {
 
 uint32_t lastOledMs = 0;
 uint32_t lastWsMs   = 0;
+uint32_t lastPollMs = 0;
 
 void loop() {
     uint32_t now = millis();
 
     if (xSemaphoreTake(camMutex, portMAX_DELAY) == pdTRUE) {
         flight.update(now);
+
+        // Periodic recording state poll to detect physical camera button presses.
+        // Only probes when idle — never disrupts an active recording.
+        if (RECORDING_POLL_INTERVAL_MS > 0 &&
+            flight.getState() == FlightState::IDLE &&
+            now - lastPollMs >= RECORDING_POLL_INTERVAL_MS) {
+            lastPollMs = now;
+            CameraResult pr = camera.pollRecordingState();
+            if (pr == CameraResult::OK) {
+                flight.syncRecordingState(now);
+            }
+        }
+
         systemState.flightState      = flight.getState();
         systemState.recordingSeconds = flight.getRecordingSeconds(now);
         systemState.cameraCommsOk    = camera.isInitialised();

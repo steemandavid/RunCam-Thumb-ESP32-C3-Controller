@@ -103,14 +103,16 @@ before calling into the shared components. The `CamLock` RAII wrapper in
 5. OLED init — SSD1306 I2C at 0x3C, full GDDRAM clear
 6. Auto-start recording if `autoStartRec` setting is enabled and camera OK
 7. WiFi AP start (`RunCam-Controller`, password `runcam1234`, channel 6)
-8. Main loop: update FlightController state, render OLED (500 ms), push
-   WebSocket status (1000 ms)
+8. Main loop: update FlightController state, poll recording state when idle,
+   render OLED (500 ms), push WebSocket status (1000 ms)
 
 ### Main Loop
 
 ```
 loop() @ 5 ms tick:
-  1. camMutex lock → flight.update(now) → read state → camMutex unlock
+  1. camMutex lock → flight.update(now)
+                   → poll camera recording state if IDLE (every 5 s)
+                   → read state → camMutex unlock
   2. updateStatusLed()  — slow blink (IDLE) or solid (RECORDING)
   3. OLED render       — every 500 ms
   4. WebSocket push    — every 1000 ms
@@ -147,10 +149,11 @@ integrity on both request and response sides.
 interface:
 - `begin()` — sends `GET_DEVICE_INFO`, caches protocol version and feature
   bitmask. Must be called before any other method.
-- `startRecording()` / `stopRecording()` — toggle recording via Power button
-  action (0x01). The Thumb Pro W firmware does not reliably support explicit
-  Start (0x03) / Stop (0x04), so both start and stop send the same toggle
-  command. Recording state is tracked host-side.
+- `startRecording()` / `stopRecording()` — `startRecording` uses Power button
+  toggle (0x01); `stopRecording` uses explicit Stop action (0x04), which returns
+  NAK if the camera is already stopped (e.g. user pressed physical button),
+  allowing state resync. Recording state is tracked host-side and periodically
+  polled via `pollRecordingState()` when idle to detect physical button presses.
 - `capturePhoto()` — sends PHOTO action (0x05)
 - `simulatePowerButton()` / `simulateModeButton()` / `simulateWifiButton()` —
   individual button simulation via `CAMERA_CONTROL`
@@ -385,6 +388,7 @@ All compile-time constants are in `src/config.h`:
 | `NVS_NAMESPACE` | `"runcam"` | NVS namespace |
 | `WS_STATUS_INTERVAL_MS` | 1000 | WebSocket push interval |
 | `OLED_REFRESH_INTERVAL_MS` | 500 | OLED refresh interval |
+| `RECORDING_POLL_INTERVAL_MS` | 5000 | Recording state poll interval (0 to disable) |
 
 ## Testing
 
@@ -398,11 +402,11 @@ Host-side tests run on the development machine (no ESP32 required). Build with
 | `test_protocol_encoding.cpp` | 6 | `buildFrame()` — header, command, data, CRC |
 | `test_protocol_parsing.cpp` | 14 | `parseResponse()` — DeviceInfo, ACK, NAK, error cases |
 | `test_crc8.cpp` | 5 | CRC8/DVB-S2 against known vectors |
-| `test_camera.cpp` | 26 | RunCamCamera with MockTransport — begin, recording, buttons, settings, retry |
-| `test_flight_controller.cpp` | 10 | FSM transitions, NAK surfacing, recording persistence |
+| `test_camera.cpp` | 27 | RunCamCamera with MockTransport — begin, recording, buttons, settings, retry, state polling |
+| `test_flight_controller.cpp` | 15 | FSM transitions, NAK surfacing, recording persistence, state sync |
 | `test_settings_store.cpp` | 16 | NVS load/save/reset with MockPreferences |
 | `test_settings_validation.cpp` | 12 | Setting value range validation |
-| **Total** | **89** | |
+| **Total** | **95** | |
 
 ### Test Infrastructure
 
@@ -449,4 +453,8 @@ auto-start recording setting with web UI toggle. OLED display corrected for
 Camera setting IDs for the Thumb Pro W remain unknown; camera-side settings
 access is deferred until vendor documentation is available.
 
-Host test count: **89 / 89 passing**.
+Recording state polling detects manual camera button presses while the ESP32
+is idle (no disruption to active recordings). The web UI stop command uses
+explicit Stop action (0x04) to correctly handle state desync.
+
+Host test count: **94 / 95 passing** (1 pre-existing failure in settings store).

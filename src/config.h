@@ -52,5 +52,10 @@
 // WebSocket
 #define WS_STATUS_INTERVAL_MS  1000
 
+// Recording state poll — probe camera every N ms to detect physical button presses.
+// Each probe briefly stops and restarts recording (~500 ms gap).
+// Set to 0 to disable polling.
+#define RECORDING_POLL_INTERVAL_MS  5000
+
 // OLED
 #define OLED_REFRESH_INTERVAL_MS  500

@@ -12,6 +12,9 @@ public:
     FlightState getState() const;
     uint32_t getRecordingSeconds(uint32_t nowMs) const;
 
+    // Sync FSM with camera's actual recording state (after poll).
+    void syncRecordingState(uint32_t nowMs);
+
     CameraResult forceStartRecording(uint32_t nowMs = 0);    CameraResult forceStopRecording();
 
 private:

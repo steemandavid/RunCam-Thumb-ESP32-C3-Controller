@@ -32,3 +32,14 @@ CameraResult FlightController::forceStopRecording() {
     }
     return result;
 }
+
+void FlightController::syncRecordingState(uint32_t nowMs) {
+    bool cameraRecording = camera_.isRecording();
+
+    if (cameraRecording && state_ == FlightState::IDLE) {
+        state_ = FlightState::RECORDING;
+        recordingStartMs_ = nowMs;
+    } else if (!cameraRecording && state_ == FlightState::RECORDING) {
+        state_ = FlightState::IDLE;
+    }
+}

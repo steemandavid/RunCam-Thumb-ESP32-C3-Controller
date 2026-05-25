@@ -32,7 +32,8 @@ public:
     // the Thumb Pro W firmware.
     CameraResult startRecording() override;
     CameraResult stopRecording() override;
-    bool         isRecording() const { return isRecording_; }
+    bool         isRecording() const override { return isRecording_; }
+    CameraResult pollRecordingState() override;
 
     CameraResult capturePhoto();
 
@@ -63,6 +64,9 @@ private:
 
     // Send a CAMERA_CONTROL action with the given action byte.
     CameraResult sendAction(uint8_t action);
+
+    // Single-attempt action send (no retries) for non-critical probes.
+    CameraResult sendSingleAction(uint8_t action);
 
     static CameraResult nakToResult(uint8_t errCode);
     static CameraResult parseResultToCameraResult(ParseResult pr);

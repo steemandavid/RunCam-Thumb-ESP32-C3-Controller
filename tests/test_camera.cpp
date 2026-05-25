@@ -66,8 +66,8 @@ void test_begin_crc_error_then_success() {
 void test_recording_toggle_via_power() {
     MockTransport t;
     t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
-    t.enqueueResponse(ack(0x01));  // first Power → start
-    t.enqueueResponse(ack(0x01));  // second Power → stop
+    t.enqueueResponse(ack(ACTION_POWER_BUTTON));  // Power toggle → start
+    t.enqueueResponse(ack(ACTION_STOP_REC));      // Stop Recording → stop
     RunCamCamera c(t);
     c.begin();
 
@@ -250,6 +250,89 @@ void test_has_feature() {
     TEST_ASSERT_FALSE(c.hasFeature(FEAT_STOP_RECORDING));
 }
 
+// --- pollRecordingState() ---------------------------------------------------
+
+void test_poll_not_initialised() {
+    MockTransport t;
+    RunCamCamera c(t);
+    TEST_ASSERT_EQUAL(CameraResult::ERROR_NOT_INITIALISED, c.pollRecordingState());
+}
+
+void test_poll_camera_not_recording() {
+    MockTransport t;
+    t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
+    t.enqueueResponse(nak(NAK_WRONG_STATE));  // probe: camera not recording
+    RunCamCamera c(t);
+    c.begin();
+    TEST_ASSERT_EQUAL(CameraResult::OK, c.pollRecordingState());
+    TEST_ASSERT_FALSE(c.isRecording());
+}
+
+void test_poll_camera_recording_restart_ok() {
+    MockTransport t;
+    t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
+    t.enqueueResponse(ack(ACTION_STOP_REC));      // probe: camera was recording
+    t.enqueueResponse(ack(ACTION_POWER_BUTTON));   // restart: OK
+    RunCamCamera c(t);
+    c.begin();
+    TEST_ASSERT_EQUAL(CameraResult::OK, c.pollRecordingState());
+    TEST_ASSERT_TRUE(c.isRecording());
+}
+
+void test_poll_camera_recording_restart_fail() {
+    MockTransport t;
+    t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
+    t.enqueueResponse(ack(ACTION_STOP_REC));  // probe: camera was recording
+    // No response for restart → timeout
+    RunCamCamera c(t);
+    c.begin();
+    TEST_ASSERT_EQUAL(CameraResult::OK, c.pollRecordingState());
+    TEST_ASSERT_FALSE(c.isRecording());
+}
+
+void test_poll_timeout_keeps_state() {
+    MockTransport t;
+    t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
+    t.enqueueResponse(ack(ACTION_POWER_BUTTON));  // for startRecording()
+    // No response for poll probe → timeout
+    RunCamCamera c(t);
+    c.begin();
+    c.startRecording();
+    TEST_ASSERT_TRUE(c.isRecording());
+    CameraResult r = c.pollRecordingState();
+    TEST_ASSERT_EQUAL(CameraResult::ERROR_TIMEOUT, r);
+    TEST_ASSERT_TRUE(c.isRecording());  // state unchanged on error
+}
+
+void test_poll_updates_state_from_recording_to_idle() {
+    // Start recording, then poll detects camera stopped (NAK from probe).
+    MockTransport t;
+    t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
+    t.enqueueResponse(ack(ACTION_POWER_BUTTON));  // startRecording()
+    t.enqueueResponse(nak(NAK_WRONG_STATE));       // poll: camera not recording
+    RunCamCamera c(t);
+    c.begin();
+    c.startRecording();
+    TEST_ASSERT_TRUE(c.isRecording());
+    c.pollRecordingState();
+    TEST_ASSERT_FALSE(c.isRecording());
+}
+
+void test_stop_handles_nak_already_stopped() {
+    // ESP32 thinks recording, but user pressed camera button to stop.
+    // stopRecording sends 0x04, gets NAK 0x02 — syncs state.
+    MockTransport t;
+    t.enqueueResponse(deviceInfo(1, ALL_FEATURES));
+    t.enqueueResponse(ack(ACTION_POWER_BUTTON));  // startRecording()
+    t.enqueueResponse(nak(NAK_WRONG_STATE));       // stopRecording: camera already stopped
+    RunCamCamera c(t);
+    c.begin();
+    c.startRecording();
+    TEST_ASSERT_TRUE(c.isRecording());
+    TEST_ASSERT_EQUAL(CameraResult::OK, c.stopRecording());
+    TEST_ASSERT_FALSE(c.isRecording());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_begin_success);
@@ -272,5 +355,12 @@ int main() {
     RUN_TEST(test_nak_short_circuits_retry);
     RUN_TEST(test_timeout_exhausts_retries);
     RUN_TEST(test_has_feature);
+    RUN_TEST(test_poll_not_initialised);
+    RUN_TEST(test_poll_camera_not_recording);
+    RUN_TEST(test_poll_camera_recording_restart_ok);
+    RUN_TEST(test_poll_camera_recording_restart_fail);
+    RUN_TEST(test_poll_timeout_keeps_state);
+    RUN_TEST(test_poll_updates_state_from_recording_to_idle);
+    RUN_TEST(test_stop_handles_nak_already_stopped);
     return UNITY_END();
 }
