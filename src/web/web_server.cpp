@@ -5,17 +5,14 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 
-static const char* stateNames[] = {"IDLE", "ARMED", "RECORDING", "STOPPING"};
+static const char* stateNames[] = {"IDLE", "RECORDING"};
 
-// RAII helper — acquires the camera/flight mutex on construction.
 struct CamLock {
     SemaphoreHandle_t m_;
     explicit CamLock(SemaphoreHandle_t m) : m_(m) { xSemaphoreTake(m_, portMAX_DELAY); }
     ~CamLock() { xSemaphoreGive(m_); }
 };
 
-// Map a CameraResult to a short JSON-friendly error string. Returns nullptr
-// on OK so the caller can detect success.
 static const char* cameraResultErrorText(CameraResult r) {
     switch (r) {
         case CameraResult::OK:                    return nullptr;
@@ -43,18 +40,15 @@ static String okOrError(CameraResult r) {
 }
 
 void WebServer::begin(RunCamCamera& camera, FlightController& fc, SettingsStore& store,
-                      WsNotifier& ws, const PreflightResult& pfResult,
-                      SemaphoreHandle_t mutex) {
+                      WsNotifier& ws, SemaphoreHandle_t mutex) {
     camera_   = &camera;
     fc_       = &fc;
     store_    = &store;
     ws_       = &ws;
-    pfResult_ = &pfResult;
     mutex_    = mutex;
 
     WiFi.softAP(WIFI_SSID, WIFI_PASSWORD, WIFI_CHANNEL);
 
-    // ---- Static web UI -----------------------------------------------------
     server_.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
         request->send_P(200, "text/html", WEB_UI);
     });
@@ -65,13 +59,9 @@ void WebServer::begin(RunCamCamera& camera, FlightController& fc, SettingsStore&
         JsonDocument doc;
         doc["state"]            = stateNames[static_cast<int>(fc_->getState())];
         doc["recordingSeconds"] = fc_->getRecordingSeconds(millis());
-        doc["autoStopSeconds"]  = fc_->getAutoStopSeconds();
-        doc["autoRestart"]      = fc_->getAutoRestart();
-        doc["armPin"]           = digitalRead(GPIO_ARM_PIN) == LOW;
         doc["cameraCommsOk"]    = camera_->isInitialised();
-        auto pf = doc["preflight"].to<JsonObject>();
-        pf["passed"]   = pfResult_->passed;
-        pf["deferred"] = pfResult_->deferred;
+        auto s = store_->load();
+        doc["autoStartRec"]     = s.autoStartRec;
         String json;
         serializeJson(doc, json);
         request->send(200, "application/json", json);
@@ -103,7 +93,7 @@ void WebServer::begin(RunCamCamera& camera, FlightController& fc, SettingsStore&
     // ---- Recording control -------------------------------------------------
     server_.on("/api/record/start", HTTP_POST, [this](AsyncWebServerRequest* request) {
         CamLock lock(mutex_);
-        CameraResult r = fc_->forceStartRecording();
+        CameraResult r = fc_->forceStartRecording(millis());
         request->send(200, "application/json", okOrError(r));
     });
     server_.on("/api/record/stop", HTTP_POST, [this](AsyncWebServerRequest* request) {
@@ -137,58 +127,40 @@ void WebServer::begin(RunCamCamera& camera, FlightController& fc, SettingsStore&
         request->send(200, "application/json", okOrError(r));
     });
 
-    // ---- Arm override -----------------------------------------------------
-    // /api/arm and /api/disarm just forward to the flight controller; the
-    // response carries the real resulting state, not a hardcoded label.
-    server_.on("/api/arm", HTTP_POST, [this](AsyncWebServerRequest* request) {
-        CamLock lock(mutex_);
-        CameraResult r = fc_->forceStartRecording();
-        if (r != CameraResult::OK) {
-            request->send(200, "application/json", okOrError(r));
-            return;
-        }
-        String body = String("{\"ok\":true,\"state\":\"") +
-                      stateNames[static_cast<int>(fc_->getState())] + "\"}";
-        request->send(200, "application/json", body);
-    });
-    server_.on("/api/disarm", HTTP_POST, [this](AsyncWebServerRequest* request) {
-        CamLock lock(mutex_);
-        CameraResult r = fc_->forceStopRecording();
-        if (r != CameraResult::OK) {
-            request->send(200, "application/json", okOrError(r));
-            return;
-        }
-        String body = String("{\"ok\":true,\"state\":\"") +
-                      stateNames[static_cast<int>(fc_->getState())] + "\"}";
-        request->send(200, "application/json", body);
+    // ---- Settings ----------------------------------------------------------
+    server_.on("/api/settings", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        auto s = store_->load();
+        JsonDocument doc;
+        doc["ok"]           = true;
+        doc["autoStartRec"] = s.autoStartRec;
+        String json;
+        serializeJson(doc, json);
+        request->send(200, "application/json", json);
     });
 
-    // ---- Auto-restart toggle ----------------------------------------------
-    server_.on("/api/auto-restart", HTTP_POST, [](AsyncWebServerRequest*) {
+    server_.on("/api/settings/autoStartRec", HTTP_POST, [](AsyncWebServerRequest*) {
     }, nullptr, [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
         JsonDocument doc;
         deserializeJson(doc, data, len);
-        bool enabled = doc["enabled"].as<bool>();
-        {
-            CamLock lock(mutex_);
-            fc_->setAutoRestart(enabled);
+        int32_t value = doc["value"].as<int32_t>();
+        if (value != 0 && value != 1) {
+            request->send(400, "application/json", "{\"ok\":false,\"error\":\"value must be 0 or 1\"}");
+            return;
         }
-        String body = String("{\"ok\":true,\"autoRestart\":") +
-                      (enabled ? "true" : "false") + "}";
-        request->send(200, "application/json", body);
+        store_->saveSetting(SettingId::AUTO_START_REC, value);
+        String json = String("{\"ok\":true,\"autoStartRec\":") + value + "}";
+        request->send(200, "application/json", json);
     });
 
-    // ---- Settings endpoints — deferred per FSD §4.5 / §8.5 ----------------
-    static const char* SETTINGS_DEFERRED_BODY =
-        "{\"ok\":false,\"error\":\"settings access deferred\"}";
-    server_.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest* request) {
-        request->send(503, "application/json", SETTINGS_DEFERRED_BODY);
-    });
-    server_.on("^/api/settings/(.+)$", HTTP_POST, [](AsyncWebServerRequest* request) {
-        request->send(503, "application/json", SETTINGS_DEFERRED_BODY);
-    });
-    server_.on("/api/settings/reset", HTTP_POST, [](AsyncWebServerRequest* request) {
-        request->send(503, "application/json", SETTINGS_DEFERRED_BODY);
+    server_.on("/api/settings/reset", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        store_->resetToDefaults();
+        auto s = store_->load();
+        JsonDocument doc;
+        doc["ok"]           = true;
+        doc["autoStartRec"] = s.autoStartRec;
+        String json;
+        serializeJson(doc, json);
+        request->send(200, "application/json", json);
     });
 
     ws_->begin(server_);

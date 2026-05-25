@@ -1,17 +1,15 @@
 // =============================================================================
 //  RunCam Thumb ESP32-C3 Controller — production boot sequence
-//  See FSD §12.4 and §3.2.
 //
 //  Boot order:
-//    1. USB CDC + status LED + ARM pin
+//    1. USB CDC + status LED
 //    2. NVS / SettingsStore (defaults on first boot)
 //    3. UART1 transport at 115200 (GPIO3 TX, GPIO4 RX)
 //    4. RunCamCamera::begin() — GET_DEVICE_INFO, caches features
-//    5. Apply settings to camera (currently a no-op due to deferred §4.5)
-//    6. PreflightCheck::run() — currently returns deferred result
-//    7. OLED init
-//    8. WiFi AP + WebServer
-//    9. Main loop: ARM pin, FlightController::update, OLED render, WS push
+//    5. OLED init (before auto-start so display is live during boot)
+//    6. Auto-start recording if setting enabled
+//    7. WiFi AP + WebServer
+//    8. Main loop: FlightController::update, OLED render, WS push
 // =============================================================================
 
 #ifndef UNIT_TEST
@@ -29,18 +27,13 @@
 #include "camera/runcam_camera.h"
 #include "storage/settings_store.h"
 #include "flight/flight_controller.h"
-#include "flight/preflight_check.h"
 #include "display/oled_display.h"
 #include "web/ws_notifier.h"
 #include "web/web_server.h"
 
 HWCDC             usbSerial;
-// Mutex guarding all camera + flight controller access. Web routes
-// (AsyncTCP task) and the main loop both take this before touching
-// the shared modules. See Code_Review_Phase4 MAJOR-2.
 SemaphoreHandle_t camMutex;
 
-// ---- IPreferences adapter for the real ESP32 Preferences library -----------
 class EspPreferences : public IPreferences {
 public:
     bool begin(const char* name, bool readOnly) override { return prefs_.begin(name, readOnly); }
@@ -62,33 +55,18 @@ OledDisplay      oled;
 WsNotifier       wsNotifier;
 WebServer        webServer;
 
-PreflightResult  preflight;
 SystemState      systemState;
 
-// ---- LED helpers -----------------------------------------------------------
 static uint32_t lastLedToggleMs = 0;
 static bool     ledOn = false;
 
 static void updateStatusLed(uint32_t now, FlightState st) {
-    // IDLE: slow 2s blink. ARMED/RECORDING: solid on. STOPPING: brief off.
-    uint32_t period = 0;
-    bool     solid  = false;
-    switch (st) {
-        case FlightState::IDLE:      period = 2000; break;
-        case FlightState::ARMED:
-        case FlightState::RECORDING: solid  = true; break;
-        case FlightState::STOPPING:  solid  = false; break;
-    }
-    if (solid) {
+    if (st == FlightState::RECORDING) {
         digitalWrite(GPIO_STATUS_LED, HIGH);
         ledOn = true;
         return;
     }
-    if (period == 0) {
-        digitalWrite(GPIO_STATUS_LED, LOW);
-        ledOn = false;
-        return;
-    }
+    uint32_t period = 2000;
     if (now - lastLedToggleMs >= period / 2) {
         ledOn = !ledOn;
         digitalWrite(GPIO_STATUS_LED, ledOn ? HIGH : LOW);
@@ -96,7 +74,6 @@ static void updateStatusLed(uint32_t now, FlightState st) {
     }
 }
 
-// ---- Boot ------------------------------------------------------------------
 void setup() {
     usbSerial.begin(115200);
     delay(1500);
@@ -106,7 +83,6 @@ void setup() {
     camMutex = xSemaphoreCreateMutex();
 
     pinMode(GPIO_STATUS_LED, OUTPUT);
-    pinMode(GPIO_ARM_PIN, INPUT_PULLUP);
     digitalWrite(GPIO_STATUS_LED, LOW);
 
     // ---- NVS / Settings ----
@@ -126,15 +102,7 @@ void setup() {
         usbSerial.printf("Camera: begin() failed, result=%d\n", static_cast<int>(r));
     }
     systemState.cameraCommsOk = (r == CameraResult::OK);
-
-    // ---- Preflight (deferred — see §5.2) ----
-    preflight = PreflightCheck::run(camera, settings);
-    systemState.preflightDone     = true;
-    systemState.preflightPassed   = preflight.passed;
-    systemState.preflightDeferred = preflight.deferred;
-    if (preflight.deferred) {
-        usbSerial.println("Preflight: deferred (settings access unavailable)");
-    }
+    systemState.autoStartRec = (settings.autoStartRec == 1);
 
     // ---- OLED ----
     Wire.begin(GPIO_OLED_SDA, GPIO_OLED_SCL);
@@ -144,32 +112,39 @@ void setup() {
         usbSerial.println("OLED: init failed");
     }
 
+    // ---- Auto-start recording ----
+    if (systemState.autoStartRec && r == CameraResult::OK) {
+        if (xSemaphoreTake(camMutex, portMAX_DELAY) == pdTRUE) {
+            CameraResult sr = flight.forceStartRecording(millis());
+            xSemaphoreGive(camMutex);
+            if (sr == CameraResult::OK) {
+                usbSerial.println("Auto-start: recording started");
+            } else {
+                usbSerial.printf("Auto-start: failed, result=%d\n", static_cast<int>(sr));
+            }
+        }
+    }
+
     // ---- WiFi AP + Web ----
-    webServer.begin(camera, flight, settingsStore, wsNotifier, preflight, camMutex);
+    webServer.begin(camera, flight, settingsStore, wsNotifier, camMutex);
     usbSerial.printf("WiFi AP: SSID=\"%s\" IP=192.168.4.1\n", WIFI_SSID);
 
     usbSerial.println("=== boot complete ===");
 }
 
-// ---- Main loop -------------------------------------------------------------
 uint32_t lastOledMs = 0;
 uint32_t lastWsMs   = 0;
 
 void loop() {
     uint32_t now = millis();
-    bool armPinLow = digitalRead(GPIO_ARM_PIN) == LOW;
 
-    // All camera + flight access goes under the mutex (MAJOR-2).
     if (xSemaphoreTake(camMutex, portMAX_DELAY) == pdTRUE) {
-        flight.update(now, armPinLow);
+        flight.update(now);
         systemState.flightState      = flight.getState();
         systemState.recordingSeconds = flight.getRecordingSeconds(now);
-        systemState.autoStopSeconds  = flight.getAutoStopSeconds();
-        systemState.autoRestart      = flight.getAutoRestart();
         systemState.cameraCommsOk    = camera.isInitialised();
         xSemaphoreGive(camMutex);
     }
-    systemState.armPinLow = armPinLow;
 
     updateStatusLed(now, systemState.flightState);
 

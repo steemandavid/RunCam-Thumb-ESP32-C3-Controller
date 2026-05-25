@@ -6,9 +6,10 @@ SettingsStore::SettingsStore(IPreferences& prefs) : prefs_(prefs) {}
 
 void SettingsStore::begin() {
     prefs_.begin(NVS_NAMESPACE, false);
-    if (!prefs_.isKey("init")) {
+    if (!prefs_.isKey("init2")) {
+        if (prefs_.isKey("init")) prefs_.remove("init");
         writeDefaults();
-        prefs_.putInt("init", 1);
+        prefs_.putInt("init2", 1);
     }
     initialised_ = true;
 }

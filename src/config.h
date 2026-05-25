@@ -14,11 +14,10 @@
 #define GPIO_OLED_SDA          5
 #define GPIO_OLED_SCL          6
 #define OLED_I2C_ADDR          0x3C
-#define OLED_WIDTH             72
-#define OLED_HEIGHT            40
+#define OLED_WIDTH             128
+#define OLED_HEIGHT            32
 
 // GPIO — Control
-#define GPIO_ARM_PIN           2
 #define GPIO_STATUS_LED        8
 
 // Serial
@@ -30,8 +29,7 @@
 #define RUNCAM_MAX_RETRIES     3
 
 // Flight logic
-#define ARM_DEBOUNCE_MS        50
-#define AUTO_STOP_DURATION_MS  300000
+// (arm pin and auto-stop removed — camera controlled via power switch)
 
 // Default camera settings
 #define DEFAULT_RESOLUTION      3   // 1080p
@@ -40,7 +38,7 @@
 #define DEFAULT_VIDEO_FORMAT    1   // PAL
 #define DEFAULT_EIS             1   // enabled
 #define DEFAULT_LOOP_RECORDING  0   // disabled
-#define DEFAULT_AUTO_START_REC  0   // disabled
+#define DEFAULT_AUTO_START_REC  1   // enabled
 #define DEFAULT_SHARPNESS       1   // Medium
 #define DEFAULT_EXPOSURE        0   // 0 EV
 #define DEFAULT_WHITE_BALANCE   0   // Auto
